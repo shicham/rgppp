@@ -1,0 +1,24 @@
+Pour savoir combien de verrous sont pris (et adapter DELETE_BATCH_SIZE / chunk), tu peux faire comme suit.
+1. Côté Oracle : voir les verrous en cours
+En tant que DBA ou utilisateur avec droits (ex. SELECT_CATALOG_ROLE), exécuter :
+-- Verrous par session (résumé)SELECT s.sid, s.serial#, s.username, s.program,       COUNT(*) AS nb_verrousFROM v$lock lJOIN v$session s ON l.sid = s.sidWHERE s.username = 'VOTRE_SCHEMA'  -- ou le user du batchGROUP BY s.sid, s.serial#, s.username, s.program;-- Détail des verrous (type, mode, id1/id2)SELECT s.sid, s.serial#, l.type, l.lmode, l.request, l.block,       o.object_name, o.object_typeFROM v$lock lJOIN v$session s ON l.sid = s.sidLEFT JOIN dba_objects o ON l.id1 = o.object_idWHERE s.username = 'VOTRE_SCHEMA'ORDER BY s.sid, l.type;
+Ça ne donne pas un "max de verrous" fixe, mais le nombre actuel de verrous pour ta session pendant l’exécution du batch. Tu peux lancer ça pendant un run de purge et noter nb_verrous (ou le nombre de lignes dans la 2e requête).
+2. Limites Oracle (ordre de grandeur)
+Nombre de verrous par session : en pratique souvent limité par enqueue_locks (paramètre d’instance, typiquement 2k–10k+). La doc parle souvent de ~nombre de DML locks ≈ nombre de lignes modifiées / verrouillées.
+Taille de la liste IN : jusqu’à 1000 éléments en bind variables (au-delà il faut découper ou utiliser une table temporaire).
+Donc le "max de verrous" utile pour toi, c’est surtout :
+ne pas faire un seul DELETE ... IN (liste de 1000) qui verrouille trop de lignes d’un coup,
+et rester sous la limite d’enqueue de la session (en gardant de la marge).
+3. Comment choisir DELETE_BATCH_SIZE sans connaître le max exact
+Sans accès aux vues v$lock / v$session :
+Tester avec la valeur actuelle (100)
+Si plus de deadlock → c’est déjà acceptable.
+Si deadlock encore → passer à 50 (ou 25).
+Règle pratique
+Un DELETE ... IN (:ids) verrouille au moins une ligne par ID (souvent plus à cause des index / tables enfants).
+Avec DELETE_BATCH_SIZE = 100, tu as au plus ~100 lignes verrouillées par requête sur une table.
+Enchaîner plusieurs tables (HISTO_TAUX_BENEFICIAIRE, HISTO_BENEFICIAIRE, etc.) par chunk multiplie les verrous ; d’où l’intérêt de petits lots.
+Si tu as les droits en base
+Pendant un run de purge : exécuter la 1re requête ci‑dessus et noter nb_verrous pour la session du batch.
+Si ce nombre monte beaucoup (ex. > 1000–2000), réduire DELETE_BATCH_SIZE (et/ou le chunk du step) jusqu’à ce que les deadlocks disparaissent.
+En résumé : il n’y a pas une seule valeur "max de verrous" à lire quelque part ; tu t’appuies sur les vues de verrous pour mesurer en direct et sur des essais avec des tailles de lot plus petites (100, 50, 25) pour rester en dessous du seuil qui provoque des deadlocks.
