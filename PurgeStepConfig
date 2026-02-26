@@ -1,0 +1,38 @@
+package com.groupama.pasrau.batch.job.step.purge;
+
+import com.groupama.pasrau.batch.model.BeneficiaireAAnonymiser;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.StepExecutionListener;
+import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
+import org.springframework.batch.item.ItemReader;
+import org.springframework.batch.item.ItemWriter;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class PurgeStepConfig {
+    /**
+     * Configuration du step de purge des bénéficiaires anonymisés.
+     *
+     * @param stepBuilderFactory le factory pour construire le step
+     * @param purgeStepReader le reader pour lire les bénéficiaires à purger
+     * @param purgeStepWriter le writer pour écrire les bénéficiaires purgés
+     * @param purgeStepListener le listener pour suivre l'exécution du step
+     * @return le step de purge des bénéficiaires anonymisés
+     */
+    @Bean
+    public Step purgeStep(
+        StepBuilderFactory stepBuilderFactory,
+        ItemReader<BeneficiaireAAnonymiser> purgeStepReader,
+        ItemWriter<BeneficiaireAAnonymiser> purgeStepWriter,
+        StepExecutionListener purgeStepListener) {
+
+        return stepBuilderFactory.get("purgeStep")
+            .<BeneficiaireAAnonymiser, BeneficiaireAAnonymiser>chunk(100)
+            .reader(purgeStepReader)
+            .writer(purgeStepWriter)
+            .listener(purgeStepListener)
+            .build();
+    }
+}
+
