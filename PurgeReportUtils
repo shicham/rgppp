@@ -1,0 +1,41 @@
+package com.groupama.pasrau.batch.utils;
+
+import com.groupama.pasrau.batch.commun.utils.FileLineUtils;
+
+import java.io.File;
+
+/**
+ * Utility class for writing purge report lines to the technical report file.
+ * Used by {@link com.groupama.pasrau.batch.job.step.purge.PurgeStepWriter} and similar steps.
+ */
+public final class PurgeReportUtils {
+
+    private static final String SUPPRESSION_PREFIX = "  ✔ Suppression de ";
+    private static final String SUPPRESSION_SUFFIX = " : %s";
+    private static final boolean APPEND = true;
+
+    private PurgeReportUtils() {
+    }
+
+    /**
+     * Writes a purge line to the report file with format: "  ✔ Suppression de tableOrDescription : value".
+     *
+     * @param file                 the report file
+     * @param tableOrDescription   the table or operation description (e.g. LIEN_REGUL_BENEF_DECLARATION)
+     * @param value                the value to append (e.g. deleted count)
+     */
+    public static void writePurgeLine(File file, String tableOrDescription, Object value) {
+        String line = String.format(SUPPRESSION_PREFIX + tableOrDescription + SUPPRESSION_SUFFIX, value);
+        FileLineUtils.processLine(file, line, APPEND);
+    }
+
+    /**
+     * Writes an arbitrary line to the report file (e.g. header or custom message).
+     *
+     * @param file    the report file
+     * @param message the message to write
+     */
+    public static void writeLine(File file, String message) {
+        FileLineUtils.processLine(file, message, APPEND);
+    }
+}
