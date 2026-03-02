@@ -1,4 +1,5 @@
--- =============================================================================
+il a y'a une raison d'ecrire tes requetes(Sous requetes)  select avec une clause IN ? 
+  -- =============================================================================
 -- JOB PURGE RGPD - REQUÊTES DE TEST APRÈS LANCEMENT
 -- =============================================================================
 -- Exécuter ce script APRÈS le job de purge pour vérifier que les données
