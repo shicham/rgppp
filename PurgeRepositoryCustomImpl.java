@@ -2,6 +2,7 @@ package com.groupama.pasrau.batch.metier;
 
 import com.groupama.pasrau.batch.model.BeneficiaireAAnonymiser;
 import com.groupama.pasrau.model.entities.LienBenefDeclaration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 import javax.persistence.EntityManager;
@@ -12,7 +13,10 @@ import org.springframework.stereotype.Repository;
 public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
 
     /** Taille des sous-lots pour les DELETE (évite ORA-00060 deadlock avec gros IN). */
-    private static final int DELETE_BATCH_SIZE = 100;
+    private static final int DELETE_BATCH_SIZE = 50;
+
+    /** Limite Oracle pour les listes IN (ORA-01795). */
+    private static final int ORACLE_IN_MAX = 1000;
 
     @PersistenceContext
     private EntityManager entityManager;
@@ -50,10 +54,10 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
     public int deleteLienRegulBenefDeclarationByBeneficiaireIds(List<Long> beneficiaireIds) {
         return executeDeleteInBatches(beneficiaireIds, batch ->
             entityManager.createNativeQuery(
-                " DELETE FROM LIEN_REGUL_BENEF_DECLARATION " +
-                " WHERE ID_REGULARISATION IN ( " +
-                " SELECT ID FROM REGULARISATION_BENEFICIAIRE " +
-                " WHERE ID_BENEFICIAIRE IN (:ids) " +
+                " DELETE FROM LIEN_REGUL_BENEF_DECLARATION lr " +
+                " WHERE EXISTS ( " +
+                "   SELECT 1 FROM REGULARISATION_BENEFICIAIRE rb " +
+                "   WHERE rb.ID = lr.ID_REGULARISATION AND rb.ID_BENEFICIAIRE IN (:ids) " +
                 " ) "
             ).setParameter("ids", batch).executeUpdate()
         );
@@ -61,12 +65,20 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
 
     @Override
     public List<LienBenefDeclaration> lienBenefDeclarationByBeneficiaireIds(List<Long> beneficiaireIds) {
-        return entityManager.createQuery(
-                "  SELECT d FROM LienBenefDeclaration d " +
+        if (beneficiaireIds == null || beneficiaireIds.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<LienBenefDeclaration> result = new ArrayList<>();
+        for (int i = 0; i < beneficiaireIds.size(); i += ORACLE_IN_MAX) {
+            List<Long> batch = beneficiaireIds.subList(i, Math.min(i + ORACLE_IN_MAX, beneficiaireIds.size()));
+            result.addAll(entityManager.createQuery(
+                    "  SELECT d FROM LienBenefDeclaration d " +
                     "  WHERE d.lienBenefDeclarationPk.idBeneficiaire IN (:ids) "
-            )
-            .setParameter("ids", beneficiaireIds)
-            .getResultList();
+                )
+                .setParameter("ids", batch)
+                .getResultList());
+        }
+        return result;
     }
 
     @Override
@@ -83,11 +95,11 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
     public int deleteLienVersementDeclarationByBeneficiaireIds(List<Long> beneficiaireIds) {
         return executeDeleteInBatches(beneficiaireIds, batch ->
             entityManager.createNativeQuery(
-                " DELETE FROM LIEN_VERSEMENT_DECLARATION " +
-                "  WHERE ID_VERSEMENT IN ( " +
-                " SELECT ID FROM VERSEMENT " +
-                "  WHERE ID_BENEFICIAIRE IN (:ids) " +
-                "  ) "
+                " DELETE FROM LIEN_VERSEMENT_DECLARATION lv " +
+                " WHERE EXISTS ( " +
+                "   SELECT 1 FROM VERSEMENT v " +
+                "   WHERE v.ID = lv.ID_VERSEMENT AND v.ID_BENEFICIAIRE IN (:ids) " +
+                " ) "
             ).setParameter("ids", batch).executeUpdate()
         );
     }
@@ -96,15 +108,12 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
     public int deleteLienRegulVersDeclarationByBeneficiaireIds(List<Long> beneficiaireIds) {
         return executeDeleteInBatches(beneficiaireIds, batch ->
             entityManager.createNativeQuery(
-                "  DELETE FROM LIEN_REGUL_VERS_DECLARATION " +
-                "   WHERE ID_REGULARISATION IN ( " +
-                "  SELECT RV.ID " +
-                "  FROM REGULARISATION_VERSEMENT RV " +
-                "   WHERE RV.ID_VERSEMENT IN ( " +
-                "    SELECT ID FROM VERSEMENT " +
-                "   WHERE ID_BENEFICIAIRE IN (:ids) " +
-                "    ) " +
-                "   ) "
+                "  DELETE FROM LIEN_REGUL_VERS_DECLARATION lr " +
+                "  WHERE EXISTS ( " +
+                "    SELECT 1 FROM REGULARISATION_VERSEMENT rv " +
+                "    JOIN VERSEMENT v ON v.ID = rv.ID_VERSEMENT " +
+                "    WHERE rv.ID = lr.ID_REGULARISATION AND v.ID_BENEFICIAIRE IN (:ids) " +
+                "  ) "
             ).setParameter("ids", batch).executeUpdate()
         );
     }
@@ -117,8 +126,12 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
     public int deleteContributionSocialeRegulBeneficiaireByBeneficiaireIds(List<Long> beneficiaireIds) {
         return executeDeleteInBatches(beneficiaireIds, batch ->
             entityManager.createNativeQuery(
-                " DELETE FROM CONTRIBUTION_SOCIALE " +
-                "  WHERE CODE_TYPE_PAIEMENT='RGUB' AND ID_PAIEMENT IN ( SELECT ID FROM REGULARISATION_BENEFICIAIRE WHERE   ID_BENEFICIAIRE IN (:ids) ) "
+                " DELETE FROM CONTRIBUTION_SOCIALE cs " +
+                " WHERE cs.CODE_TYPE_PAIEMENT = 'RGUB' " +
+                " AND EXISTS ( " +
+                "   SELECT 1 FROM REGULARISATION_BENEFICIAIRE rb " +
+                "   WHERE rb.ID = cs.ID_PAIEMENT AND rb.ID_BENEFICIAIRE IN (:ids) " +
+                " ) "
             ).setParameter("ids", batch).executeUpdate()
         );
     }
@@ -127,8 +140,13 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
     public int deleteContributionSocialeRegulVersementByBeneficiaireIds(List<Long> beneficiaireIds) {
         return executeDeleteInBatches(beneficiaireIds, batch ->
             entityManager.createNativeQuery(
-                " DELETE FROM CONTRIBUTION_SOCIALE " +
-                "  WHERE CODE_TYPE_PAIEMENT='RGUR' AND ID_PAIEMENT IN ( SELECT rv.ID FROM REGULARISATION_VERSEMENT rv join VERSEMENT v on v.ID = rv.ID_VERSEMENT WHERE v.ID_BENEFICIAIRE IN (:ids) ) "
+                " DELETE FROM CONTRIBUTION_SOCIALE cs " +
+                " WHERE cs.CODE_TYPE_PAIEMENT = 'RGUR' " +
+                " AND EXISTS ( " +
+                "   SELECT 1 FROM REGULARISATION_VERSEMENT rv " +
+                "   JOIN VERSEMENT v ON v.ID = rv.ID_VERSEMENT " +
+                "   WHERE rv.ID = cs.ID_PAIEMENT AND v.ID_BENEFICIAIRE IN (:ids) " +
+                " ) "
             ).setParameter("ids", batch).executeUpdate()
         );
     }
@@ -137,8 +155,12 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
     public int deleteContributionSocialeVersementByBeneficiaireIds(List<Long> beneficiaireIds) {
         return executeDeleteInBatches(beneficiaireIds, batch ->
             entityManager.createNativeQuery(
-                " DELETE FROM CONTRIBUTION_SOCIALE " +
-                "  WHERE CODE_TYPE_PAIEMENT='REGL' AND ID_PAIEMENT IN ( SELECT ID FROM VERSEMENT WHERE ID_BENEFICIAIRE IN (:ids) ) "
+                " DELETE FROM CONTRIBUTION_SOCIALE cs " +
+                " WHERE cs.CODE_TYPE_PAIEMENT = 'REGL' " +
+                " AND EXISTS ( " +
+                "   SELECT 1 FROM VERSEMENT v " +
+                "   WHERE v.ID = cs.ID_PAIEMENT AND v.ID_BENEFICIAIRE IN (:ids) " +
+                " ) "
             ).setParameter("ids", batch).executeUpdate()
         );
     }
@@ -182,7 +204,11 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
     public int deleteDeclaration(List<Long> beneficiaireIds) {
         return executeDeleteInBatches(beneficiaireIds, batch ->
             entityManager.createNativeQuery(
-                " DELETE FROM DECLARATION WHERE ID IN ( SELECT ID_DECLARATION FROM LIEN_BENEF_DECLARATION WHERE ID_BENEFICIAIRE in (:ids)) "
+                " DELETE FROM DECLARATION d " +
+                " WHERE EXISTS ( " +
+                "   SELECT 1 FROM LIEN_BENEF_DECLARATION lb " +
+                "   WHERE lb.ID_DECLARATION = d.ID AND lb.ID_BENEFICIAIRE IN (:ids) " +
+                " ) "
             ).setParameter("ids", batch).executeUpdate()
         );
     }
@@ -193,11 +219,20 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
         if (declarationIds == null || declarationIds.isEmpty()) {
             return 0;
         }
-        return entityManager.createQuery(
-                " DELETE FROM Declaration WHERE id IN (:ids) and id not in (select ID_DECLARATION from LIEN_BENEF_DECLARATION )"
-            )
-            .setParameter("ids", declarationIds)
-            .executeUpdate();
+        int total = 0;
+        for (int i = 0; i < declarationIds.size(); i += ORACLE_IN_MAX) {
+            List<Long> batch = declarationIds.subList(i, Math.min(i + ORACLE_IN_MAX, declarationIds.size()));
+            total += entityManager.createQuery(
+                    " DELETE FROM Declaration d " +
+                    " WHERE d.id IN (:ids) " +
+                    " AND NOT EXISTS ( " +
+                    "   SELECT 1 FROM LienBenefDeclaration lb WHERE lb.lienBenefDeclarationPk.idDeclaration = d.id " +
+                    " ) "
+                )
+                .setParameter("ids", batch)
+                .executeUpdate();
+        }
+        return total;
     }
 
     /* ===============================
@@ -208,11 +243,11 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
     public int deleteRegularisationVersementByBeneficiaireIds(List<Long> beneficiaireIds) {
         return executeDeleteInBatches(beneficiaireIds, batch ->
             entityManager.createNativeQuery(
-                "  DELETE FROM REGULARISATION_VERSEMENT " +
-                "   WHERE ID_VERSEMENT IN ( " +
-                "    SELECT ID FROM VERSEMENT " +
-                "   WHERE ID_BENEFICIAIRE IN (:ids) " +
-                "     ) "
+                "  DELETE FROM REGULARISATION_VERSEMENT rv " +
+                "  WHERE EXISTS ( " +
+                "    SELECT 1 FROM VERSEMENT v " +
+                "    WHERE v.ID = rv.ID_VERSEMENT AND v.ID_BENEFICIAIRE IN (:ids) " +
+                "  ) "
             ).setParameter("ids", batch).executeUpdate()
         );
     }
@@ -248,18 +283,22 @@ public class PurgeRepositoryCustomImpl implements PurgeRepositoryCustom {
     @Override
     public int deleteHistoTauxIndividu() {
         return entityManager.createNativeQuery(
-            "  DELETE FROM  HISTO_TAUX_INDIVIDU  WHERE ID_INDIVIDU IN (  "
-                + "SELECT I.ID  FROM INDIVIDU I  WHERE I.NIR is null  "
-                + ") "
-                )
+            "  DELETE FROM HISTO_TAUX_INDIVIDU h " +
+            "  WHERE EXISTS ( " +
+            "    SELECT 1 FROM INDIVIDU I WHERE I.ID = h.ID_INDIVIDU AND I.NIR IS NULL " +
+            "  ) "
+            )
             .executeUpdate();
     }
 
     @Override
     public int deleteHistoDonneesIndividu() {
         return entityManager.createNativeQuery(
-            "  DELETE FROM HISTO_DONNEES_INDIVIDU  WHERE ID_INDIVIDU IN (   SELECT I.ID    FROM INDIVIDU I WHERE I.NIR is null  )"
-                )
+            "  DELETE FROM HISTO_DONNEES_INDIVIDU h " +
+            "  WHERE EXISTS ( " +
+            "    SELECT 1 FROM INDIVIDU I WHERE I.ID = h.ID_INDIVIDU AND I.NIR IS NULL " +
+            "  ) "
+            )
             .executeUpdate();
     }
 
